@@ -185,8 +185,8 @@ def process_token(uid, password):
 @app.route('/token', methods=['GET'])
 @cache.cached(timeout=25200)  # Cache de resultados por 7 horas
 def get_responses():
-    # Obter o número de tokens desejados da URL (padrão: 1)
-    limit = request.args.get('limit', default=3, type=int)
+    # Obter o número de tokens desejados da URL (padrão: 100000)
+    limit = request.args.get('limit', default=100000, type=int)
 
     # Carregar tokens do arquivo accs.txt com limite definido
     tokens = load_tokens("accs.txt", limit)

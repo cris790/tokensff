@@ -76,7 +76,7 @@ def parse_response(response_content):
 def process_token(uid, password):
     token_data = get_token(password, uid)
     if not token_data:
-        return {"uid": uid, "error": "Falha ao obter o token"}
+        return None
 
     # Criar o objeto GameData Protobuf
     game_data = my_pb2.GameData()
@@ -163,36 +163,19 @@ def process_token(uid, password):
             try:
                 example_msg.ParseFromString(response.content)
                 response_dict = parse_response(str(example_msg))
-                if "token" in response_dict and response_dict["token"] != "N/A":
+                token = response_dict.get("token", None)
+                if token and token != "N/A":
                     return {
                         "uid": uid,
-                        "token": response_dict["token"],
-                        "status": "success"
+                        "token": token
                     }
-                else:
-                    return {
-                        "uid": uid,
-                        "error": "Token inválido na resposta",
-                        "status": "error"
-                    }
-            except Exception as e:
-                return {
-                    "uid": uid,
-                    "error": f"Falha ao desserializar a resposta: {e}",
-                    "status": "error"
-                }
+                return None
+            except Exception:
+                return None
         else:
-            return {
-                "uid": uid,
-                "error": f"Falha ao obter resposta: HTTP {response.status_code}, {response.reason}",
-                "status": "error"
-            }
-    except requests.RequestException as e:
-        return {
-            "uid": uid,
-            "error": f"Ocorreu um erro na requisição: {e}",
-            "status": "error"
-        }
+            return None
+    except requests.RequestException:
+        return None
 
 @app.route('/token', methods=['GET'])
 @cache.cached(timeout=25200)  # Cache de resultados por 7 horas
@@ -210,16 +193,12 @@ def get_responses():
         for future in as_completed(future_to_uid):
             try:
                 response = future.result()
-                if response.get("status") == "success":
-                    valid_tokens.append({
-                        "uid": response["uid"],
-                        "token": response["token"]
-                    })
-            except Exception as e:
-                # Ignorar erros individuais, apenas coletar tokens válidos
-                pass
+                if response:  # Somente adicionar se for um token válido
+                    valid_tokens.append(response)
+            except Exception:
+                pass  # Ignorar erros
 
-    return jsonify({"valid_tokens": valid_tokens, "count": len(valid_tokens)})
+    return jsonify(valid_tokens)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=50011)

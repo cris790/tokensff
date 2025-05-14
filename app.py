@@ -163,23 +163,35 @@ def process_token(uid, password):
             try:
                 example_msg.ParseFromString(response.content)
                 response_dict = parse_response(str(example_msg))
-                return {
-                    "token": response_dict.get("token", "N/A")
-                }
+                if "token" in response_dict and response_dict["token"] != "N/A":
+                    return {
+                        "uid": uid,
+                        "token": response_dict["token"],
+                        "status": "success"
+                    }
+                else:
+                    return {
+                        "uid": uid,
+                        "error": "Token inválido na resposta",
+                        "status": "error"
+                    }
             except Exception as e:
                 return {
                     "uid": uid,
-                    "error": f"Falha ao desserializar a resposta: {e}"
+                    "error": f"Falha ao desserializar a resposta: {e}",
+                    "status": "error"
                 }
         else:
             return {
                 "uid": uid,
-                "error": f"Falha ao obter resposta: HTTP {response.status_code}, {response.reason}"
+                "error": f"Falha ao obter resposta: HTTP {response.status_code}, {response.reason}",
+                "status": "error"
             }
     except requests.RequestException as e:
         return {
             "uid": uid,
-            "error": f"Ocorreu um erro na requisição: {e}"
+            "error": f"Ocorreu um erro na requisição: {e}",
+            "status": "error"
         }
 
 @app.route('/token', methods=['GET'])
@@ -190,7 +202,7 @@ def get_responses():
 
     # Carregar tokens do arquivo accs.txt com limite definido
     tokens = load_tokens("accs.txt", limit)
-    responses = []
+    valid_tokens = []
 
     # Usar ThreadPoolExecutor para executar tarefas em paralelo
     with ThreadPoolExecutor(max_workers=15) as executor:
@@ -198,11 +210,16 @@ def get_responses():
         for future in as_completed(future_to_uid):
             try:
                 response = future.result()
-                responses.append(response)
+                if response.get("status") == "success":
+                    valid_tokens.append({
+                        "uid": response["uid"],
+                        "token": response["token"]
+                    })
             except Exception as e:
-                responses.append({"uid": future_to_uid[future], "error": str(e)})
+                # Ignorar erros individuais, apenas coletar tokens válidos
+                pass
 
-    return jsonify(responses)
+    return jsonify({"valid_tokens": valid_tokens, "count": len(valid_tokens)})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=50011)

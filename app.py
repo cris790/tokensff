@@ -55,7 +55,7 @@ def encrypt_message(key, iv, plaintext):
     encrypted_message = cipher.encrypt(padded_message)
     return encrypted_message
 
-def load_tokens(file_path, limit=500):  # Agora o valor padrão é 500
+def load_tokens(file_path, limit=600):  # Alterado o valor padrão para 600
     with open(file_path, 'r') as file:
         data = json.load(file)
         tokens = list(data.items())
@@ -185,15 +185,15 @@ def process_token(uid, password):
 @app.route('/token', methods=['GET'])
 @cache.cached(timeout=25200)  # Cache de resultados por 7 horas
 def get_responses():
-    # Obter o número de tokens desejados da URL (padrão: 1)
-    limit = request.args.get('limit', default=3, type=int)
+    # Obter o número de tokens desejados da URL (padrão: 600)
+    limit = request.args.get('limit', default=600, type=int)
 
     # Carregar tokens do arquivo accs.txt com limite definido
     tokens = load_tokens("accs.txt", limit)
     responses = []
 
     # Usar ThreadPoolExecutor para executar tarefas em paralelo
-    with ThreadPoolExecutor(max_workers=15) as executor:
+    with ThreadPoolExecutor(max_workers=30) as executor:  # Aumentado para 30 threads
         future_to_uid = {executor.submit(process_token, uid, password): uid for uid, password in tokens}
         for future in as_completed(future_to_uid):
             try:

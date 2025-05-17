@@ -55,7 +55,7 @@ def encrypt_message(key, iv, plaintext):
     encrypted_message = cipher.encrypt(padded_message)
     return encrypted_message
 
-def load_tokens(file_path, limit=500):
+def load_tokens(file_path, limit=500):  # Agora o valor padrão é 500
     with open(file_path, 'r') as file:
         data = json.load(file)
         tokens = list(data.items())

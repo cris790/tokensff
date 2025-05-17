@@ -7,60 +7,32 @@ import binascii
 import my_pb2
 import output_pb2
 import json
+from colorama import Fore, Style, init
 import warnings
 from urllib3.exceptions import InsecureRequestWarning
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import signal
+import traceback
 import os
-import sys
-import resource
-import logging
-from logging.handlers import RotatingFileHandler
+import datetime
 
-# Disable SSL warnings
+# Ignorar avisos de certificado SSL
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
-# Constants
 AES_KEY = b'Yg&tc%DEuh6%Zc^8'
 AES_IV = b'6oyZDr22E3ychjM%'
-MAX_WORKERS = 30
-MAX_TOKENS = 1000
-CHUNK_SIZE = 50
-CACHE_TIMEOUT = 25200  # 7 hours in seconds
 
-# Initialize Flask app
+# Inicializar colorama
+init(autoreset=True)
+
+# Inicializar o aplicativo Flask
 app = Flask(__name__)
 
-# Configure logging
-log_handler = RotatingFileHandler('api.log', maxBytes=10*1024*1024, backupCount=5)
-log_handler.setFormatter(logging.Formatter(
-    '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-))
-app.logger.addHandler(log_handler)
-app.logger.setLevel(logging.INFO)
+# Configurar o cache com duração de 7 horas
+cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 25200})  # 7 horas em segundos
 
-# Set memory limits (512MB)
-soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, hard))
-
-# Cache configuration
-cache_config = {
-    'CACHE_TYPE': 'SimpleCache',
-    'CACHE_DEFAULT_TIMEOUT': CACHE_TIMEOUT,
-    'CACHE_THRESHOLD': 1000
-}
-cache = Cache(app, config=cache_config)
-
-# Signal handlers for graceful shutdown
-def handle_shutdown(signum, frame):
-    app.logger.info("Shutdown signal received, exiting gracefully...")
-    sys.exit(0)
-
-signal.signal(signal.SIGINT, handle_shutdown)
-signal.signal(signal.SIGTERM, handle_shutdown)
+print(f"{datetime.datetime.now()} - Servidor iniciado ou reiniciado")
 
 def get_token(password, uid):
-    """Fetch token from Garena API"""
     url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
     headers = {
         "Host": "100067.connect.garena.com",
@@ -77,34 +49,31 @@ def get_token(password, uid):
         "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
         "client_id": "100067"
     }
-    
     try:
         response = requests.post(url, headers=headers, data=data, timeout=10)
-        response.raise_for_status()
+        if response.status_code != 200:
+            return None
         return response.json()
-    except requests.RequestException as e:
-        app.logger.error(f"Token request failed for UID {uid}: {str(e)}")
+    except requests.RequestException:
         return None
 
 def encrypt_message(key, iv, plaintext):
-    """Encrypt data using AES-CBC"""
     cipher = AES.new(key, AES.MODE_CBC, iv)
     padded_message = pad(plaintext, AES.block_size)
-    return cipher.encrypt(padded_message)
+    encrypted_message = cipher.encrypt(padded_message)
+    return encrypted_message
 
 def load_tokens(file_path, limit=600):
-    """Load tokens from file with limit"""
-    try:
-        with open(file_path, 'r') as file:
-            data = json.load(file)
-            tokens = list(data.items())
-            return tokens[:limit]
-    except Exception as e:
-        app.logger.error(f"Failed to load tokens: {str(e)}")
+    if not os.path.exists(file_path):
         return []
+    with open(file_path, 'r') as file:
+        data = json.load(file)
+        tokens = list(data.items())
+        if limit is not None:
+            tokens = tokens[:limit]
+        return tokens
 
 def parse_response(response_content):
-    """Parse protobuf response"""
     response_dict = {}
     lines = response_content.split("\n")
     for line in lines:
@@ -114,12 +83,11 @@ def parse_response(response_content):
     return response_dict
 
 def process_token(uid, password):
-    """Process a single token request"""
     token_data = get_token(password, uid)
     if not token_data:
-        return {"uid": uid, "error": "Failed to get token"}
+        return {"uid": uid, "error": "Falha ao obter o token"}
 
-    # Create GameData protobuf
+    # Criar objeto protobuf
     game_data = my_pb2.GameData()
     game_data.timestamp = "2024-12-05 18:15:32"
     game_data.game_name = "free fire"
@@ -175,12 +143,12 @@ def process_token(uid, password):
     game_data.field_99 = "4"
     game_data.field_100 = "4"
 
-    # Serialize and encrypt
+    # Serializar e criptografar
     serialized_data = game_data.SerializeToString()
     encrypted_data = encrypt_message(AES_KEY, AES_IV, serialized_data)
     hex_encrypted_data = binascii.hexlify(encrypted_data).decode('utf-8')
+    edata = bytes.fromhex(hex_encrypted_data)
 
-    # Send to server
     url = "https://loginbp.common.ggbluefox.com/MajorLogin"
     headers = {
         'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
@@ -192,103 +160,42 @@ def process_token(uid, password):
         'X-GA': "v1 1",
         'ReleaseVersion': "OB48"
     }
-    edata = bytes.fromhex(hex_encrypted_data)
 
     try:
-        response = requests.post(url, data=edata, headers=headers, verify=False, timeout=15)
+        response = requests.post(url, data=edata, headers=headers, verify=False, timeout=10)
         if response.status_code == 200:
             example_msg = output_pb2.Garena_420()
             try:
                 example_msg.ParseFromString(response.content)
                 response_dict = parse_response(str(example_msg))
                 return {
-                    "uid": uid,
                     "token": response_dict.get("token", "N/A")
                 }
             except Exception as e:
-                return {
-                    "uid": uid,
-                    "error": f"Failed to parse response: {str(e)}"
-                }
+                return {"uid": uid, "error": f"Desserialização falhou: {e}"}
         else:
-            return {
-                "uid": uid,
-                "error": f"HTTP {response.status_code}: {response.reason}"
-            }
+            return {"uid": uid, "error": f"HTTP {response.status_code}: {response.reason}"}
     except requests.RequestException as e:
-        return {
-            "uid": uid,
-            "error": f"Request failed: {str(e)}"
-        }
-
-def process_chunk(chunk):
-    """Process a chunk of tokens"""
-    results = []
-    for uid, password in chunk:
-        try:
-            result = process_token(uid, password)
-            results.append(result)
-        except Exception as e:
-            results.append({"uid": uid, "error": str(e)})
-    return results
+        return {"uid": uid, "error": f"Erro de requisição: {e}"}
 
 @app.route('/token', methods=['GET'])
-@cache.cached(timeout=CACHE_TIMEOUT, query_string=True)
+@cache.cached(timeout=25200)
 def get_responses():
-    """Main endpoint to get tokens"""
-    try:
-        limit = min(request.args.get('limit', default=600, type=int), MAX_TOKENS)
-        tokens = load_tokens("accs.txt", limit)
-        
-        if not tokens:
-            return jsonify({"error": "No tokens available"}), 500
+    limit = request.args.get('limit', default=600, type=int)
+    tokens = load_tokens("accs.txt", limit)
+    responses = []
 
-        responses = []
-        successful = 0
-        workers = min(MAX_WORKERS, len(tokens) // CHUNK_SIZE + 1)
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        future_to_uid = {executor.submit(process_token, uid, password): uid for uid, password in tokens}
+        for future in as_completed(future_to_uid):
+            try:
+                response = future.result()
+                responses.append(response)
+            except Exception as e:
+                error_msg = f"Erro ao processar {future_to_uid[future]}: {str(e)}\n{traceback.format_exc()}"
+                responses.append({"uid": future_to_uid[future], "error": error_msg})
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = []
-            
-            # Process in chunks
-            for i in range(0, len(tokens), CHUNK_SIZE):
-                chunk = tokens[i:i + CHUNK_SIZE]
-                futures.append(executor.submit(process_chunk, chunk))
-            
-            for future in as_completed(futures):
-                try:
-                    chunk_result = future.result()
-                    responses.extend(chunk_result)
-                    successful += sum(1 for r in chunk_result if 'token' in r)
-                except Exception as e:
-                    app.logger.error(f"Chunk processing failed: {str(e)}")
-
-        return jsonify({
-            "total": len(responses),
-            "successful": successful,
-            "failed": len(responses) - successful,
-            "results": responses
-        })
-    except Exception as e:
-        app.logger.error(f"Unexpected error in get_responses: {str(e)}")
-        return jsonify({"error": "Internal server error"}), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        "status": "healthy",
-        "pid": os.getpid(),
-        "memory": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    })
+    return jsonify(responses)
 
 if __name__ == "__main__":
-    # Production configuration
-    port = int(os.environ.get('PORT', 50011))
-    
-    if os.environ.get('FLASK_ENV') == 'production':
-        from waitress import serve
-        serve(app, host="0.0.0.0", port=port, threads=50)
-    else:
-        # Development without auto-reload
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=50011, debug=False)

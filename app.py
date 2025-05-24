@@ -16,31 +16,49 @@ import time
 import socket
 import socks
 from fake_useragent import UserAgent
+import threading
 
-# Ignorar avisos de certificado SSL
+# Ignore SSL warnings
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
-# Configurações
+# Configuration
 AES_KEY = b'Yg&tc%DEuh6%Zc^8'
 AES_IV = b'6oyZDr22E3ychjM%'
-MAX_WORKERS = 50  # Aumentado de 15 para 50
-REQUEST_DELAY = (0.1, 0.5)  # Intervalo aleatório entre requisições
-PROXY_LIST = []  # Preencher com seus proxies se necessário
+MAX_WORKERS = 50
+DEFAULT_DELAY = (0.5, 2.0)  # Min and max delay in seconds
+GLOBAL_DELAY = False  # Whether to use global delay synchronization
+PROXY_LIST = []  # Fill with your proxies if needed ('ip:port' format)
+MAX_RETRIES = 3  # Max retry attempts for failed requests
 
-# Inicializar colorama
+# Initialize colorama
 init(autoreset=True)
 
-# Inicializar o aplicativo Flask
+# Initialize Flask app
 app = Flask(__name__)
 
-# Configurar o cache com duração de 7 horas
+# Configure cache
 cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 25200})
 
-# Inicializar UserAgent para headers aleatórios
+# Initialize UserAgent for random headers
 ua = UserAgent()
 
+class RequestDelayer:
+    """Class to manage request delays"""
+    _lock = threading.Lock()
+    
+    def __init__(self):
+        self.last_request_time = 0
+        
+    def wait(self, min_delay, max_delay):
+        with self._lock:
+            elapsed = time.time() - self.last_request_time
+            wait_time = max(0, random.uniform(min_delay, max_delay) - elapsed
+            if wait_time > 0:
+                time.sleep(wait_time)
+            self.last_request_time = time.time()
+
 def get_working_proxy():
-    """Retorna um proxy funcional da lista"""
+    """Get a working proxy from the list"""
     if not PROXY_LIST:
         return None
     
@@ -49,16 +67,17 @@ def get_working_proxy():
             ip, port = proxy.split(':')
             socks.set_default_proxy(socks.SOCKS5, ip, int(port))
             socket.socket = socks.socksocket
-            # Testar o proxy
+            
+            # Test the proxy
             test_ip = requests.get('https://api.ipify.org', timeout=5).text
-            print(f"Proxy funcionando: {proxy} (IP: {test_ip})")
+            print(f"{Fore.CYAN}Using proxy: {proxy} (IP: {test_ip})")
             return proxy
-        except:
+        except Exception as e:
             continue
     return None
 
-def get_token(password, uid, attempt=1, max_attempts=3):
-    """Obtém token com retry automático"""
+def get_token(password, uid, attempt=1):
+    """Get authentication token with retry logic"""
     url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
     
     headers = {
@@ -96,28 +115,28 @@ def get_token(password, uid, attempt=1, max_attempts=3):
         
         if response.status_code == 200:
             return response.json()
-        elif response.status_code == 429 and attempt < max_attempts:
-            # Rate limit atingido - esperar e tentar novamente
+        elif response.status_code == 429 and attempt < MAX_RETRIES:
             wait_time = random.uniform(1, 5)
-            print(f"Rate limit atingido para {uid}. Tentativa {attempt}/{max_attempts}. Esperando {wait_time:.2f}s...")
+            print(f"{Fore.YELLOW}Rate limit hit for {uid}. Attempt {attempt}/{MAX_RETRIES}. Waiting {wait_time:.2f}s...")
             time.sleep(wait_time)
-            return get_token(password, uid, attempt+1, max_attempts)
+            return get_token(password, uid, attempt+1)
         else:
-            print(f"Falha ao obter token para {uid}. Status: {response.status_code}")
+            print(f"{Fore.RED}Failed to get token for {uid}. Status: {response.status_code}")
             return None
     except Exception as e:
-        print(f"Erro ao obter token para {uid}: {str(e)}")
-        if attempt < max_attempts:
-            return get_token(password, uid, attempt+1, max_attempts)
+        print(f"{Fore.RED}Error getting token for {uid}: {str(e)}")
+        if attempt < MAX_RETRIES:
+            return get_token(password, uid, attempt+1)
         return None
 
 def encrypt_message(key, iv, plaintext):
+    """Encrypt message using AES-CBC"""
     cipher = AES.new(key, AES.MODE_CBC, iv)
     padded_message = pad(plaintext, AES.block_size)
-    encrypted_message = cipher.encrypt(padded_message)
-    return encrypted_message
+    return cipher.encrypt(padded_message)
 
-def load_tokens(file_path, limit=500):
+def load_tokens(file_path, limit=None):
+    """Load tokens from JSON file"""
     with open(file_path, 'r') as file:
         data = json.load(file)
         tokens = list(data.items())
@@ -126,6 +145,7 @@ def load_tokens(file_path, limit=500):
         return tokens
 
 def parse_response(response_content):
+    """Parse protobuf response"""
     response_dict = {}
     lines = response_content.split("\n")
     for line in lines:
@@ -134,27 +154,29 @@ def parse_response(response_content):
             response_dict[key.strip()] = value.strip().strip('"')
     return response_dict
 
-def process_token(uid, password):
-    """Processa um token com melhor tratamento de erros e headers aleatórios"""
-    # Delay aleatório entre requisições
-    time.sleep(random.uniform(*REQUEST_DELAY))
+def process_token(uid, password, delayer=None, min_delay=None, max_delay=None):
+    """Process a single token with delay control"""
+    # Apply delay if configured
+    if delayer:
+        delayer.wait(min_delay or DEFAULT_DELAY[0], max_delay or DEFAULT_DELAY[1])
+    elif min_delay and max_delay:
+        time.sleep(random.uniform(min_delay, max_delay))
     
+    # Get token
     token_data = get_token(password, uid)
     if not token_data:
-        return {"uid": uid, "error": "Falha ao obter o token"}
-
-    # Criar o objeto GameData Protobuf
-    game_data = my_pb2.GameData()
-    # ... (seu código existente de preenchimento do game_data)
+        return {"uid": uid, "error": "Failed to get token", "status": "error"}
     
-    # Serializar os dados
+    # Prepare GameData protobuf
+    game_data = my_pb2.GameData()
+    # ... (your existing GameData population code)
+    
+    # Serialize and encrypt
     serialized_data = game_data.SerializeToString()
-
-    # Criptografar os dados
     encrypted_data = encrypt_message(AES_KEY, AES_IV, serialized_data)
     hex_encrypted_data = binascii.hexlify(encrypted_data).decode('utf-8')
-
-    # Headers aleatórios
+    
+    # Prepare request
     headers = {
         'User-Agent': ua.random,
         'Connection': "Keep-Alive",
@@ -166,8 +188,6 @@ def process_token(uid, password):
         'ReleaseVersion': "OB48"
     }
     
-    edata = bytes.fromhex(hex_encrypted_data)
-
     try:
         proxy = get_working_proxy()
         proxies = {
@@ -177,10 +197,10 @@ def process_token(uid, password):
         
         response = requests.post(
             "https://loginbp.common.ggbluefox.com/MajorLogin",
-            data=edata,
+            data=bytes.fromhex(hex_encrypted_data),
             headers=headers,
             proxies=proxies,
-            timeout=10,
+            timeout=15,
             verify=False
         )
         
@@ -197,7 +217,7 @@ def process_token(uid, password):
             except Exception as e:
                 return {
                     "uid": uid,
-                    "error": f"Falha ao desserializar: {e}",
+                    "error": f"Parse error: {e}",
                     "status": "error"
                 }
         else:
@@ -206,7 +226,7 @@ def process_token(uid, password):
                 "error": f"HTTP {response.status_code}",
                 "status": "error"
             }
-    except requests.RequestException as e:
+    except Exception as e:
         return {
             "uid": uid,
             "error": f"Request failed: {e}",
@@ -216,53 +236,91 @@ def process_token(uid, password):
 @app.route('/token', methods=['GET'])
 @cache.cached(timeout=25200, query_string=True)
 def get_responses():
-    """Endpoint principal com suporte a parâmetros de controle"""
+    """Main endpoint with enhanced controls"""
+    # Get parameters
     limit = request.args.get('limit', default=500, type=int)
     workers = min(request.args.get('workers', default=MAX_WORKERS, type=int), 100)
+    min_delay = request.args.get('min_delay', default=DEFAULT_DELAY[0], type=float)
+    max_delay = request.args.get('max_delay', default=DEFAULT_DELAY[1], type=float)
+    global_delay = request.args.get('global_delay', default=GLOBAL_DELAY, type=bool)
+    
+    # Validate delays
+    if min_delay < 0 or max_delay < min_delay:
+        return jsonify({"error": "Invalid delay parameters"}), 400
     
     tokens = load_tokens("accs.txt", limit)
     responses = []
+    delayer = RequestDelayer() if global_delay else None
     
-    print(f"Iniciando processamento de {len(tokens)} tokens com {workers} workers...")
+    print(f"{Fore.GREEN}Starting processing of {len(tokens)} tokens with:")
+    print(f"- Workers: {workers}")
+    print(f"- Delay: {min_delay}-{max_delay}s ({'GLOBAL' if global_delay else 'PER WORKER'})")
+    if PROXY_LIST:
+        print(f"- Proxies: {len(PROXY_LIST)} available")
     
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_uid = {
-            executor.submit(process_token, uid, password): uid 
-            for uid, password in tokens
+        futures = {
+            executor.submit(
+                process_token,
+                uid,
+                password,
+                delayer,
+                min_delay,
+                max_delay
+            ): uid for uid, password in tokens
         }
         
-        for future in as_completed(future_to_uid):
+        for future in as_completed(futures):
             try:
-                response = future.result()
-                responses.append(response)
-                if response.get('status') == 'success':
-                    print(f"{Fore.GREEN}Sucesso: {response['uid']}")
+                result = future.result()
+                responses.append(result)
+                
+                if result.get('status') == 'success':
+                    print(f"{Fore.GREEN}✓ {result['uid']}")
                 else:
-                    print(f"{Fore.YELLOW}Erro: {response['uid']} - {response.get('error', 'Unknown error')}")
+                    print(f"{Fore.YELLOW}✗ {result['uid']}: {result.get('error', 'Unknown error')}")
             except Exception as e:
-                uid = future_to_uid[future]
+                uid = futures[future]
                 responses.append({"uid": uid, "error": str(e), "status": "error"})
-                print(f"{Fore.RED}Falha crítica: {uid} - {str(e)}")
+                print(f"{Fore.RED}✗ {uid}: CRITICAL - {str(e)}")
     
-    stats = {
-        'total': len(responses),
-        'success': sum(1 for r in responses if r.get('status') == 'success'),
-        'errors': sum(1 for r in responses if r.get('status') != 'success')
-    }
+    # Generate statistics
+    success = sum(1 for r in responses if r.get('status') == 'success')
+    errors = len(responses) - success
     
-    print(f"\nEstatísticas: {Fore.CYAN}{stats}")
+    print(f"\n{Fore.CYAN}=== Results ===")
+    print(f"Total: {len(responses)}")
+    print(f"Success: {success}")
+    print(f"Errors: {errors}")
+    print(f"Success rate: {success/len(responses)*100:.2f}%")
+    
     return jsonify({
-        'data': responses,
-        'stats': stats
+        "data": responses,
+        "stats": {
+            "total": len(responses),
+            "success": success,
+            "errors": errors,
+            "success_rate": f"{success/len(responses)*100:.2f}%"
+        }
     })
 
 if __name__ == "__main__":
-    # Carregar proxies de um arquivo se existir
+    # Load proxies if available
     try:
         with open('proxies.txt', 'r') as f:
             PROXY_LIST = [line.strip() for line in f if line.strip()]
-        print(f"Carregados {len(PROXY_LIST)} proxies")
+        print(f"{Fore.CYAN}Loaded {len(PROXY_LIST)} proxies")
     except FileNotFoundError:
-        print("Arquivo proxies.txt não encontrado. Continuando sem proxies")
+        print(f"{Fore.YELLOW}No proxies.txt found. Running without proxies")
+    
+    # Load delay configuration
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+            DEFAULT_DELAY = (config.get('min_delay', 0.5), config.get('max_delay', 2.0))
+            GLOBAL_DELAY = config.get('global_delay', False)
+            MAX_WORKERS = config.get('max_workers', 50)
+    except FileNotFoundError:
+        print(f"{Fore.YELLOW}No config.json found. Using default settings")
     
     app.run(host="0.0.0.0", port=50011, threaded=True)

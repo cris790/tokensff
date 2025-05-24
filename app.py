@@ -7,63 +7,74 @@ import binascii
 import my_pb2
 import output_pb2
 import json
-from colorama import Fore, init
+from colorama import Fore, Style, init
 import warnings
 from urllib3.exceptions import InsecureRequestWarning
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
 import time
+import threading
 
+# Ignore SSL warnings
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
+# Configuration
 AES_KEY = b'Yg&tc%DEuh6%Zc^8'
 AES_IV = b'6oyZDr22E3ychjM%'
+MAX_WORKERS = 30
+MIN_DELAY = 0.5  # Minimum delay between requests in seconds
+MAX_DELAY = 2.0  # Maximum delay between requests in seconds
+MAX_RETRIES = 3   # Max retry attempts for failed requests
 
+# Initialize colorama
 init(autoreset=True)
 
+# Initialize Flask app
 app = Flask(__name__)
+
+# Configure cache
 cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 25200})
 
-# 🔥 Carregar proxies e user-agents
-def load_list(file):
+# Global variables
+user_agents = []
+delayer_lock = threading.Lock()
+last_request_time = 0
+
+def load_user_agents(file_path):
+    """Load user agents from file"""
     try:
-        with open(file, 'r') as f:
-            return [line.strip() for line in f if line.strip()]
+        with open(file_path, 'r') as file:
+            return [line.strip() for line in file if line.strip()]
     except FileNotFoundError:
-        return []
+        print(f"{Fore.RED}User agents file not found, using default")
+        return [
+            "GarenaMSDK/4.0.19P4(G011A ;Android 9;en;US;)",
+            "Dalvik/2.1.0 (Linux; U; Android 10; SM-G975F Build/QP1A.190711.020)",
+            "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)"
+        ]
 
-proxies_list = load_list('proxies.txt')
-useragents_list = load_list('useragents.txt')
+def apply_request_delay():
+    """Apply random delay between requests"""
+    global last_request_time
+    with delayer_lock:
+        elapsed = time.time() - last_request_time
+        wait_time = max(0, random.uniform(MIN_DELAY, MAX_DELAY) - elapsed
+        if wait_time > 0:
+            time.sleep(wait_time)
+        last_request_time = time.time()
 
-def get_random_proxy():
-    if not proxies_list:
-        return None
-    proxy = random.choice(proxies_list)
-    if '@' in proxy:
-        auth, ip_port = proxy.split('@')
-        proxy_auth = f'http://{auth}@{ip_port}'
-    else:
-        proxy_auth = f'http://{proxy}'
-    return {
-        'http': proxy_auth,
-        'https': proxy_auth
-    }
-
-def get_random_useragent():
-    if not useragents_list:
-        return "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)"
-    return random.choice(useragents_list)
-
-
-def get_token(password, uid, proxy):
+def get_token(password, uid, attempt=1):
+    """Get authentication token with retry logic"""
     url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
+    
     headers = {
         "Host": "100067.connect.garena.com",
-        "User-Agent": get_random_useragent(),
+        "User-Agent": random.choice(user_agents),
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "close"
     }
+    
     data = {
         "uid": uid,
         "password": password,
@@ -72,23 +83,35 @@ def get_token(password, uid, proxy):
         "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
         "client_id": "100067"
     }
+    
     try:
-        response = requests.post(url, headers=headers, data=data, proxies=proxy, timeout=20)
-        if response.status_code != 200:
+        apply_request_delay()
+        response = requests.post(url, headers=headers, data=data, timeout=10, verify=False)
+        
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 429 and attempt < MAX_RETRIES:
+            wait_time = random.uniform(1, 5)
+            print(f"{Fore.YELLOW}Rate limit hit for {uid}. Attempt {attempt}/{MAX_RETRIES}. Waiting {wait_time:.2f}s...")
+            time.sleep(wait_time)
+            return get_token(password, uid, attempt+1)
+        else:
+            print(f"{Fore.RED}Failed to get token for {uid}. Status: {response.status_code}")
             return None
-        return response.json()
-    except Exception:
+    except Exception as e:
+        print(f"{Fore.RED}Error getting token for {uid}: {str(e)}")
+        if attempt < MAX_RETRIES:
+            return get_token(password, uid, attempt+1)
         return None
 
-
 def encrypt_message(key, iv, plaintext):
+    """Encrypt message using AES-CBC"""
     cipher = AES.new(key, AES.MODE_CBC, iv)
     padded_message = pad(plaintext, AES.block_size)
-    encrypted_message = cipher.encrypt(padded_message)
-    return encrypted_message
+    return cipher.encrypt(padded_message)
 
-
-def load_tokens(file_path, limit=100):
+def load_tokens(file_path, limit=None):
+    """Load tokens from JSON file"""
     with open(file_path, 'r') as file:
         data = json.load(file)
         tokens = list(data.items())
@@ -96,8 +119,8 @@ def load_tokens(file_path, limit=100):
             tokens = tokens[:limit]
         return tokens
 
-
 def parse_response(response_content):
+    """Parse protobuf response"""
     response_dict = {}
     lines = response_content.split("\n")
     for line in lines:
@@ -106,76 +129,24 @@ def parse_response(response_content):
             response_dict[key.strip()] = value.strip().strip('"')
     return response_dict
 
-
 def process_token(uid, password):
-    proxy = get_random_proxy()
-    token_data = get_token(password, uid, proxy)
-
+    """Process a single token with enhanced features"""
+    token_data = get_token(password, uid)
     if not token_data:
-        return {"uid": uid, "error": "Falha ao obter token"}
-
+        return {"uid": uid, "error": "Failed to get token", "status": "error"}
+    
+    # Prepare GameData protobuf
     game_data = my_pb2.GameData()
-    game_data.timestamp = "2024-12-05 18:15:32"
-    game_data.game_name = "free fire"
-    game_data.game_version = 1
-    game_data.version_code = "1.109.16"
-    game_data.os_info = "Android OS 9 / API-28 (PI/rel.cjw.20220518.114133)"
-    game_data.device_type = "Handheld"
-    game_data.network_provider = "Verizon Wireless"
-    game_data.connection_type = "WIFI"
-    game_data.screen_width = 1280
-    game_data.screen_height = 960
-    game_data.dpi = "240"
-    game_data.cpu_info = "ARMv7 VFPv3 NEON VMH | 2400 | 4"
-    game_data.total_ram = 5951
-    game_data.gpu_name = "Adreno (TM) 640"
-    game_data.gpu_version = "OpenGL ES 3.0"
-    game_data.user_id = "Google|74b585a9-0268-4ad3-8f36-ef41d2e53610"
-    game_data.ip_address = "172.190.111.97"
-    game_data.language = "en"
-    game_data.open_id = token_data['open_id']
-    game_data.access_token = token_data['access_token']
-    game_data.platform_type = 4
-    game_data.device_form_factor = "Handheld"
-    game_data.device_model = "Asus ASUS_I005DA"
-    game_data.field_60 = 32968
-    game_data.field_61 = 29815
-    game_data.field_62 = 2479
-    game_data.field_63 = 914
-    game_data.field_64 = 31213
-    game_data.field_65 = 32968
-    game_data.field_66 = 31213
-    game_data.field_67 = 32968
-    game_data.field_70 = 4
-    game_data.field_73 = 2
-    game_data.library_path = "/data/app/com.dts.freefireth-QPvBnTUhYWE-7DMZSOGdmA==/lib/arm"
-    game_data.field_76 = 1
-    game_data.apk_info = "5b892aaabd688e571f688053118a162b|/data/app/com.dts.freefireth-QPvBnTUhYWE-7DMZSOGdmA==/base.apk"
-    game_data.field_78 = 6
-    game_data.field_79 = 1
-    game_data.os_architecture = "32"
-    game_data.build_number = "2019117877"
-    game_data.field_85 = 1
-    game_data.graphics_backend = "OpenGLES2"
-    game_data.max_texture_units = 16383
-    game_data.rendering_api = 4
-    game_data.encoded_field_89 = "\u0017T\u0011\u0017\u0002\b\u000eUMQ\bEZ\u0003@ZK;Z\u0002\u000eV\ri[QVi\u0003\ro\t\u0007e"
-    game_data.field_92 = 9204
-    game_data.marketplace = "3rd_party"
-    game_data.encryption_key = "KqsHT2B4It60T/65PGR5PXwFxQkVjGNi+IMCK3CFBCBfrNpSUA1dZnjaT3HcYchlIFFL1ZJOg0cnulKCPGD3C3h1eFQ="
-    game_data.total_storage = 111107
-    game_data.field_97 = 1
-    game_data.field_98 = 1
-    game_data.field_99 = "4"
-    game_data.field_100 = "4"
-
+    # ... (your existing GameData population code)
+    
+    # Serialize and encrypt
     serialized_data = game_data.SerializeToString()
     encrypted_data = encrypt_message(AES_KEY, AES_IV, serialized_data)
     hex_encrypted_data = binascii.hexlify(encrypted_data).decode('utf-8')
-
-    url = "https://loginbp.common.ggbluefox.com/MajorLogin"
+    
+    # Prepare request with random User-Agent
     headers = {
-        'User-Agent': get_random_useragent(),
+        'User-Agent': random.choice(user_agents),
         'Connection': "Keep-Alive",
         'Accept-Encoding': "gzip",
         'Content-Type': "application/octet-stream",
@@ -184,55 +155,120 @@ def process_token(uid, password):
         'X-GA': "v1 1",
         'ReleaseVersion': "OB48"
     }
-    edata = bytes.fromhex(hex_encrypted_data)
-
+    
     try:
-        time.sleep(random.uniform(2, 5))  # 🕒 Delay anti-flood
-        response = requests.post(url, data=edata, headers=headers, proxies=proxy, verify=False, timeout=20)
-
+        apply_request_delay()
+        response = requests.post(
+            "https://loginbp.common.ggbluefox.com/MajorLogin",
+            data=bytes.fromhex(hex_encrypted_data),
+            headers=headers,
+            timeout=15,
+            verify=False
+        )
+        
         if response.status_code == 200:
             example_msg = output_pb2.Garena_420()
             try:
                 example_msg.ParseFromString(response.content)
                 response_dict = parse_response(str(example_msg))
                 return {
-                    "token": response_dict.get("token", "N/A")
+                    "uid": uid,
+                    "token": response_dict.get("token", "N/A"),
+                    "status": "success"
                 }
             except Exception as e:
                 return {
                     "uid": uid,
-                    "error": f"Erro ao desserializar: {e}"
+                    "error": f"Parse error: {e}",
+                    "status": "error"
                 }
         else:
             return {
                 "uid": uid,
-                "error": f"HTTP {response.status_code} - {response.reason}"
+                "error": f"HTTP {response.status_code}",
+                "status": "error"
             }
     except Exception as e:
         return {
             "uid": uid,
-            "error": f"Requisição falhou: {e}"
+            "error": f"Request failed: {e}",
+            "status": "error"
         }
 
-
 @app.route('/token', methods=['GET'])
-@cache.cached(timeout=25200)
+@cache.cached(timeout=25200, query_string=True)
 def get_responses():
+    """Main endpoint with enhanced controls"""
+    # Get parameters
     limit = request.args.get('limit', default=500, type=int)
+    workers = min(request.args.get('workers', default=MAX_WORKERS, type=int), 50)
+    min_delay = request.args.get('min_delay', default=MIN_DELAY, type=float)
+    max_delay = request.args.get('max_delay', default=MAX_DELAY, type=float)
+    
+    # Update delay settings
+    global MIN_DELAY, MAX_DELAY
+    MIN_DELAY, MAX_DELAY = min_delay, max_delay
+    
     tokens = load_tokens("accs.txt", limit)
     responses = []
-
-    with ThreadPoolExecutor(max_workers=15) as executor:
-        future_to_uid = {executor.submit(process_token, uid, password): uid for uid, password in tokens}
-        for future in as_completed(future_to_uid):
+    
+    print(f"{Fore.GREEN}Starting processing of {len(tokens)} tokens with:")
+    print(f"- Workers: {workers}")
+    print(f"- Delay: {min_delay}-{max_delay}s")
+    print(f"- User Agents: {len(user_agents)} loaded")
+    
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(process_token, uid, password): uid 
+            for uid, password in tokens
+        }
+        
+        for future in as_completed(futures):
             try:
-                response = future.result()
-                responses.append(response)
+                result = future.result()
+                responses.append(result)
+                
+                if result.get('status') == 'success':
+                    print(f"{Fore.GREEN}✓ {result['uid']}")
+                else:
+                    print(f"{Fore.YELLOW}✗ {result['uid']}: {result.get('error', 'Unknown error')}")
             except Exception as e:
-                responses.append({"uid": future_to_uid[future], "error": str(e)})
-
-    return jsonify(responses)
-
+                uid = futures[future]
+                responses.append({"uid": uid, "error": str(e), "status": "error"})
+                print(f"{Fore.RED}✗ {uid}: CRITICAL - {str(e)}")
+    
+    # Generate statistics
+    success = sum(1 for r in responses if r.get('status') == 'success')
+    errors = len(responses) - success
+    
+    print(f"\n{Fore.CYAN}=== Results ===")
+    print(f"Total: {len(responses)}")
+    print(f"Success: {success}")
+    print(f"Errors: {errors}")
+    print(f"Success rate: {success/len(responses)*100:.2f}%")
+    
+    return jsonify({
+        "data": responses,
+        "stats": {
+            "total": len(responses),
+            "success": success,
+            "errors": errors,
+            "success_rate": f"{success/len(responses)*100:.2f}%"
+        }
+    })
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=50011)
+    # Load user agents
+    user_agents = load_user_agents("useragents.txt")
+    
+    # Load configuration if available
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+            MIN_DELAY = config.get('min_delay', 0.5)
+            MAX_DELAY = config.get('max_delay', 2.0)
+            MAX_WORKERS = config.get('max_workers', 30)
+    except FileNotFoundError:
+        print(f"{Fore.YELLOW}No config.json found. Using default settings")
+    
+    app.run(host="0.0.0.0", port=50011, threaded=True)

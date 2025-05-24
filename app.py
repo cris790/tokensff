@@ -28,7 +28,7 @@ app = Flask(__name__)
 cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 25200})  # 7 horas em segundos
 
 def get_token(password, uid):
-    url = "http://100067.connect.garena.com/api/v2/oauth/guest/token:grant"
+    url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
     headers = {
         "Host": "100067.connect.garena.com",
         "User-Agent": "GarenaMSDK/4.0.19P4(G011A ;Android 9;en;US;)",

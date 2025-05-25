@@ -11,23 +11,112 @@ from colorama import Fore, Style, init
 import warnings
 from urllib3.exceptions import InsecureRequestWarning
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import random
 
-# Ignore SSL certificate warnings
+# Ignorar avisos de certificado SSL
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 AES_KEY = b'Yg&tc%DEuh6%Zc^8'
 AES_IV = b'6oyZDr22E3ychjM%'
 
-# Initialize colorama
+# Inicializar colorama
 init(autoreset=True)
 
-# Initialize Flask app
+# Inicializar o aplicativo Flask
 app = Flask(__name__)
 
-# Configure Flask-Caching
-cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 25200})  # 7 ساعات بالثواني (7 * 60 * 60)
+# Configurar o cache com duração de 7 horas
+cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 25200})  # 7 horas em segundos
+
+# Lista de proxies
+PROXIES = [
+    # SOCKS5 proxy
+    {
+        'type': 'socks5',
+        'url': 'socks5://admintai123:thanhtai123@103.112.69.11:50101'
+    },
+    # MTProto proxies
+    {
+        'type': 'https',
+        'url': 'https://eeac1b2e182d79103229195cd32a0ec87c617a7572652e6d6963726f736f66742e636f6d@47.83.235.249:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee6bae918fb04fdfc20d4ccc2df7d7d44d617a7572652e6d6963726f736f66742e636f6d@8.213.237.70:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://eebd3a45b22645a719161eec747e9de30e617a7572652e6d6963726f736f66742e636f6d@8.213.206.60:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee08856c24bd5aad245aa4f417acd99c46617a7572652e6d6963726f736f66742e636f6d@8.213.239.54:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee65203e73964e1037bc6e0d69a886ec24617a7572652e6d6963726f736f66742e636f6d@8.213.205.30:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee42246bf40ede33ac0f9311bfe1236b12617a7572652e6d6963726f736f66742e636f6d@8.213.207.239:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee2479ea1fc50d1fb699cc76b4a9803060617a7572652e6d6963726f736f66742e636f6d@8.215.47.78:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://eec33d761a901ca9f208ad450c0a1111a6617a7572652e6d6963726f736f66742e636f6d@147.139.182.8:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee7fa70d3dbfe2246038d132ffb1c00f33617a7572652e6d6963726f736f66742e636f6d@8.215.32.101:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://eedf8495b1f6ce06c8e50076f569615370617a7572652e6d6963726f736f66742e636f6d@8.213.233.71:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee013bb2a52e2d9a3785ba1be0c0a58e67617a7572652e6d6963726f736f66742e636f6d@8.213.193.166:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee29a671bbb5631b35834e3650d5af2d5e617a7572652e6d6963726f736f66742e636f6d@8.215.39.50:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://eeef71a381280eb097c8f53a3b66342e06617a7572652e6d6963726f736f66742e636f6d@8.213.218.75:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee5680a3d738feab5d33e6fcc85d6d0e45617a7572652e6d6963726f736f66742e636f6d@8.215.21.176:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://ee2d7ab2271d206de0cbb01f0480323b46617a7572652e6d6963726f736f66742e636f6d@8.213.216.75:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://eebc94999abb6d630dd03db21018d3cacf617a7572652e6d6963726f736f66742e636f6d@147.139.188.167:443'
+    },
+    {
+        'type': 'https',
+        'url': 'https://eedf25b0b49d78cd5ef9148f595994d39c617a7572652e6d6963726f736f66742e636f6d@8.213.230.22:443'
+    }
+]
+
+def get_random_proxy():
+    """Retorna um proxy aleatório da lista"""
+    return random.choice(PROXIES)
 
 def get_token(password, uid):
+    proxy = get_random_proxy()
+    proxies = {
+        'http': proxy['url'],
+        'https': proxy['url']
+    }
+    
     url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
     headers = {
         "Host": "100067.connect.garena.com",
@@ -44,10 +133,16 @@ def get_token(password, uid):
         "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
         "client_id": "100067"
     }
-    response = requests.post(url, headers=headers, data=data)
-    if response.status_code != 200:
+    
+    try:
+        response = requests.post(url, headers=headers, data=data, proxies=proxies, verify=False, timeout=10)
+        if response.status_code != 200:
+            print(f"{Fore.RED}Proxy failed ({proxy['url']}), trying another one...{Style.RESET_ALL}")
+            return None
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"{Fore.RED}Error with proxy {proxy['url']}: {e}{Style.RESET_ALL}")
         return None
-    return response.json()
 
 def encrypt_message(key, iv, plaintext):
     cipher = AES.new(key, AES.MODE_CBC, iv)
@@ -55,16 +150,16 @@ def encrypt_message(key, iv, plaintext):
     encrypted_message = cipher.encrypt(padded_message)
     return encrypted_message
 
-def load_tokens(file_path, limit=None):
+def load_tokens(file_path, limit=100):
     with open(file_path, 'r') as file:
         data = json.load(file)
         tokens = list(data.items())
         if limit is not None:
-            tokens = tokens[:limit]  # تحديد عدد التوكنات
+            tokens = tokens[:limit]  # Limitar a quantidade de tokens
         return tokens
 
 def parse_response(response_content):
-    # تحليل الـ response لاستخراج الحقول المهمة
+    # Analisar a resposta e extrair os campos importantes
     response_dict = {}
     lines = response_content.split("\n")
     for line in lines:
@@ -76,14 +171,14 @@ def parse_response(response_content):
 def process_token(uid, password):
     token_data = get_token(password, uid)
     if not token_data:
-        return {"uid": uid, "error": "Failed to retrieve token"}
+        return {"uid": uid, "error": "Falha ao obter o token"}
 
-    # إنشاء GameData Protobuf
+    # Criar o objeto GameData Protobuf
     game_data = my_pb2.GameData()
     game_data.timestamp = "2024-12-05 18:15:32"
     game_data.game_name = "free fire"
     game_data.game_version = 1
-    game_data.version_code = "1.108.3"
+    game_data.version_code = "1.109.16"
     game_data.os_info = "Android OS 9 / API-28 (PI/rel.cjw.20220518.114133)"
     game_data.device_type = "Handheld"
     game_data.network_provider = "Verizon Wireless"
@@ -134,14 +229,14 @@ def process_token(uid, password):
     game_data.field_99 = "4"
     game_data.field_100 = "4"
 
-    # تسلسل البيانات
+    # Serializar os dados
     serialized_data = game_data.SerializeToString()
 
-    # تشفير البيانات
+    # Criptografar os dados
     encrypted_data = encrypt_message(AES_KEY, AES_IV, serialized_data)
     hex_encrypted_data = binascii.hexlify(encrypted_data).decode('utf-8')
 
-    # إرسال البيانات المشفرة إلى الخادم
+    # Enviar os dados criptografados para o servidor
     url = "https://loginbp.common.ggbluefox.com/MajorLogin"
     headers = {
         'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
@@ -151,51 +246,60 @@ def process_token(uid, password):
         'Expect': "100-continue",
         'X-Unity-Version': "2018.4.11f1",
         'X-GA': "v1 1",
-        'ReleaseVersion': "OB47"
+        'ReleaseVersion': "OB48"
     }
     edata = bytes.fromhex(hex_encrypted_data)
 
+    # Usar um proxy diferente para esta requisição
+    proxy = get_random_proxy()
+    proxies = {
+        'http': proxy['url'],
+        'https': proxy['url']
+    }
+
     try:
-        response = requests.post(url, data=edata, headers=headers, verify=False)
+        response = requests.post(url, data=edata, headers=headers, proxies=proxies, verify=False, timeout=10)
         if response.status_code == 200:
-            # محاولة فك تشفير الـ Protobuf
+            # Tentar desserializar a resposta
             example_msg = output_pb2.Garena_420()
             try:
                 example_msg.ParseFromString(response.content)
-                # تحليل الـ response لاستخراج الحقول المهمة
                 response_dict = parse_response(str(example_msg))
                 return {
-#                    "uid": uid,
-#                    "status": response_dict.get("status", "N/A"),
-                    "token": response_dict.get("token", "N/A")
+                    "uid": uid,
+                    "token": response_dict.get("token", "N/A"),
+                    "proxy_used": proxy['url']
                 }
             except Exception as e:
                 return {
                     "uid": uid,
-                    "error": f"Failed to deserialize the response: {e}"
+                    "error": f"Falha ao desserializar a resposta: {e}",
+                    "proxy_used": proxy['url']
                 }
         else:
             return {
                 "uid": uid,
-                "error": f"Failed to get response: HTTP {response.status_code}, {response.reason}"
+                "error": f"Falha ao obter resposta: HTTP {response.status_code}, {response.reason}",
+                "proxy_used": proxy['url']
             }
     except requests.RequestException as e:
         return {
             "uid": uid,
-            "error": f"An error occurred while making the request: {e}"
+            "error": f"Ocorreu um erro na requisição: {e}",
+            "proxy_used": proxy['url']
         }
 
 @app.route('/token', methods=['GET'])
-@cache.cached(timeout=25200)  # تخزين النتائج لمدة 7 ساعات
+@cache.cached(timeout=25200)  # Cache de resultados por 7 horas
 def get_responses():
-    # الحصول على عدد التوكنات المطلوبة من query parameter (افتراضيًا 100)
-    limit = request.args.get('limit', default=1, type=int)
+    # Obter o número de tokens desejados da URL (padrão: 500)
+    limit = request.args.get('limit', default=500, type=int)
 
-    # تحميل التوكنات من ملف accs.txt مع تحديد الحد الأقصى
+    # Carregar tokens do arquivo accs.txt com limite definido
     tokens = load_tokens("accs.txt", limit)
     responses = []
 
-    # استخدام ThreadPoolExecutor لتنفيذ المهام بشكل متوازي
+    # Usar ThreadPoolExecutor para executar tarefas em paralelo
     with ThreadPoolExecutor(max_workers=15) as executor:
         future_to_uid = {executor.submit(process_token, uid, password): uid for uid, password in tokens}
         for future in as_completed(future_to_uid):

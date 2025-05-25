@@ -7,25 +7,34 @@ import binascii
 import my_pb2
 import output_pb2
 import json
-from colorama import Fore, Style, init
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import random
 import warnings
 from urllib3.exceptions import InsecureRequestWarning
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Ignorar avisos de certificado SSL
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
+# Configurações de criptografia
 AES_KEY = b'Yg&tc%DEuh6%Zc^8'
 AES_IV = b'6oyZDr22E3ychjM%'
 
-# Inicializar colorama
-init(autoreset=True)
+# Lista de proxies SOCKS5 (adicione mais se tiver)
+proxies_list = [
+    "socks5://admintai123:thanhtai123@103.112.69.11:50101",
+]
 
-# Inicializar o aplicativo Flask
+# Inicializar o Flask
 app = Flask(__name__)
+cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 25200})
 
-# Configurar o cache com duração de 7 horas
-cache = Cache(app, config={'CACHE_TYPE': 'SimpleCache', 'CACHE_DEFAULT_TIMEOUT': 25200})  # 7 horas em segundos
+# Função para escolher proxy aleatório
+def get_random_proxy():
+    proxy = random.choice(proxies_list)
+    return {
+        "http": proxy,
+        "https": proxy
+    }
 
 def get_token(password, uid):
     url = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
@@ -44,10 +53,13 @@ def get_token(password, uid):
         "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
         "client_id": "100067"
     }
-    response = requests.post(url, headers=headers, data=data)
-    if response.status_code != 200:
+    try:
+        response = requests.post(url, headers=headers, data=data, proxies=get_random_proxy(), timeout=15, verify=False)
+        if response.status_code != 200:
+            return None
+        return response.json()
+    except Exception:
         return None
-    return response.json()
 
 def encrypt_message(key, iv, plaintext):
     cipher = AES.new(key, AES.MODE_CBC, iv)
@@ -60,11 +72,10 @@ def load_tokens(file_path, limit=100):
         data = json.load(file)
         tokens = list(data.items())
         if limit is not None:
-            tokens = tokens[:limit]  # Limitar a quantidade de tokens
+            tokens = tokens[:limit]
         return tokens
 
 def parse_response(response_content):
-    # Analisar a resposta e extrair os campos importantes
     response_dict = {}
     lines = response_content.split("\n")
     for line in lines:
@@ -78,7 +89,6 @@ def process_token(uid, password):
     if not token_data:
         return {"uid": uid, "error": "Falha ao obter o token"}
 
-    # Criar o objeto GameData Protobuf
     game_data = my_pb2.GameData()
     game_data.timestamp = "2024-12-05 18:15:32"
     game_data.game_name = "free fire"
@@ -134,14 +144,10 @@ def process_token(uid, password):
     game_data.field_99 = "4"
     game_data.field_100 = "4"
 
-    # Serializar os dados
     serialized_data = game_data.SerializeToString()
-
-    # Criptografar os dados
     encrypted_data = encrypt_message(AES_KEY, AES_IV, serialized_data)
     hex_encrypted_data = binascii.hexlify(encrypted_data).decode('utf-8')
 
-    # Enviar os dados criptografados para o servidor
     url = "https://loginbp.common.ggbluefox.com/MajorLogin"
     headers = {
         'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
@@ -156,9 +162,8 @@ def process_token(uid, password):
     edata = bytes.fromhex(hex_encrypted_data)
 
     try:
-        response = requests.post(url, data=edata, headers=headers, verify=False)
+        response = requests.post(url, data=edata, headers=headers, proxies=get_random_proxy(), timeout=15, verify=False)
         if response.status_code == 200:
-            # Tentar desserializar a resposta
             example_msg = output_pb2.Garena_420()
             try:
                 example_msg.ParseFromString(response.content)
@@ -167,32 +172,19 @@ def process_token(uid, password):
                     "token": response_dict.get("token", "N/A")
                 }
             except Exception as e:
-                return {
-                    "uid": uid,
-                    "error": f"Falha ao desserializar a resposta: {e}"
-                }
+                return {"uid": uid, "error": f"Falha ao desserializar a resposta: {e}"}
         else:
-            return {
-                "uid": uid,
-                "error": f"Falha ao obter resposta: HTTP {response.status_code}, {response.reason}"
-            }
-    except requests.RequestException as e:
-        return {
-            "uid": uid,
-            "error": f"Ocorreu um erro na requisição: {e}"
-        }
+            return {"uid": uid, "error": f"Falha HTTP {response.status_code}: {response.reason}"}
+    except Exception as e:
+        return {"uid": uid, "error": f"Erro de requisição: {e}"}
 
 @app.route('/token', methods=['GET'])
-@cache.cached(timeout=25200)  # Cache de resultados por 7 horas
+@cache.cached(timeout=25200)
 def get_responses():
-    # Obter o número de tokens desejados da URL (padrão: 500)
     limit = request.args.get('limit', default=500, type=int)
-
-    # Carregar tokens do arquivo accs.txt com limite definido
     tokens = load_tokens("accs.txt", limit)
     responses = []
 
-    # Usar ThreadPoolExecutor para executar tarefas em paralelo
     with ThreadPoolExecutor(max_workers=15) as executor:
         future_to_uid = {executor.submit(process_token, uid, password): uid for uid, password in tokens}
         for future in as_completed(future_to_uid):
